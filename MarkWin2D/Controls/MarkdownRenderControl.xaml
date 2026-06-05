@@ -6,7 +6,7 @@
     xmlns:win2d="using:Microsoft.Graphics.Canvas.UI.Xaml">
     <ScrollViewer
         x:Name="ScrollViewer"
-        HorizontalScrollBarVisibility="Disabled"
+        HorizontalScrollBarVisibility="Auto"
         VerticalScrollBarVisibility="Auto">
         <win2d:CanvasControl x:Name="MarkdownCanvas" Draw="OnDraw" />
 

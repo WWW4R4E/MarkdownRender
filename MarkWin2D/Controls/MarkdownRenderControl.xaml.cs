@@ -25,6 +25,8 @@ public sealed partial class MarkWin2DControl : UserControl
     private bool _layoutDirty = true;
     private float _lastWidth;
     private float _totalHeight;
+    private float _maxContentWidth;
+    private bool _isInternalResize;
     private readonly MarkdownPipeline _pipeline;
     private CanvasTextFormat? _bf, _cf;
     private CanvasDevice? _device;
@@ -78,7 +80,8 @@ public sealed partial class MarkWin2DControl : UserControl
 
     private void OnImagesInvalidated(object? sender, EventArgs e)
     {
-        ComputeLayout((float)MarkdownCanvas.ActualWidth);
+        float vw = _lastWidth > 0 ? _lastWidth : (float)ScrollViewer.ViewportWidth;
+        if (vw > 0) ComputeLayout(vw);
         MarkdownCanvas.Invalidate();
     }
 
@@ -114,6 +117,7 @@ public sealed partial class MarkWin2DControl : UserControl
 
     private void OnCanvasSizeChanged(object sender, SizeChangedEventArgs e)
     {
+        if (_isInternalResize) return;
         float w = (float)e.NewSize.Width;
         if (_document != null && Math.Abs(w - _lastWidth) > 0.5f)
             ComputeLayout(w);
@@ -126,6 +130,7 @@ public sealed partial class MarkWin2DControl : UserControl
         _layout.Clear();
         _imageEntries.Clear();
         _tableCache.Clear();
+        _maxContentWidth = w;
         _totalHeight = DocumentStyle.DocumentMargin;
         float cw = w - DocumentStyle.DocumentMargin * 2;
         if (cw < 0) cw = w;
@@ -133,6 +138,14 @@ public sealed partial class MarkWin2DControl : UserControl
         _totalHeight += DocumentStyle.DocumentMargin;
         _lastWidth = w;
         _layoutDirty = false;
+
+        float finalW = Math.Max(w, _maxContentWidth);
+        if (Math.Abs(MarkdownCanvas.Width - finalW) > 0.5f)
+        {
+            _isInternalResize = true;
+            MarkdownCanvas.Width = finalW;
+            _isInternalResize = false;
+        }
 
         if (!float.IsNaN(_totalHeight) &&
         (float.IsNaN((float)MarkdownCanvas.Height) ||
@@ -227,13 +240,24 @@ public sealed partial class MarkWin2DControl : UserControl
             if (lo != null) textH = (float)lo.DrawBounds.Height;
         }
         float hh = textH + (textH > 0 ? DocumentStyle.ParagraphSpacing : 0);
-        float imgY = _totalHeight + hh;
-        foreach (var img in images)
+        if (images.Count > 0)
         {
-            float ih = ImageHeight(img.Url, w);
-            _imageEntries.Add(new ImageEntry(img.Url, img.Alt, x, imgY, w, ih));
-            imgY += ih;
-            hh += ih;
+            float imgY = _totalHeight + hh;
+            float cx = x;
+            float lineH = 0;
+            foreach (var img in images)
+            {
+                var (iw, ih) = GetImageDimensions(img.Url, img.Alt, w);
+                if (cx + iw > x + w && cx > x)
+                {
+                    imgY += lineH; lineH = 0; cx = x;
+                }
+                _imageEntries.Add(new ImageEntry(img.Url, img.Alt, cx, imgY, iw, ih));
+                cx += iw + 4;
+                if (ih > lineH) lineH = ih;
+                _maxContentWidth = Math.Max(_maxContentWidth, cx);
+            }
+            hh = (imgY + lineH) - _totalHeight +4;
         }
         if (hh <= 0) hh = DocumentStyle.ParagraphSpacing;
         _totalHeight += hh;
@@ -275,41 +299,74 @@ public sealed partial class MarkWin2DControl : UserControl
         {
             float iw = (float)bmp.Size.Width;
             float ih = (float)bmp.Size.Height;
-            float rw = Math.Min(img.W, DocumentStyle.MaxImageWidth > 0 ? DocumentStyle.MaxImageWidth : img.W);
-            float scale = Math.Min(rw / iw, img.H / ih);
-            float dw = iw * scale;
-            float dh = ih * scale;
-            float dx = img.X;
-            dx += DocumentStyle.ImageAlignment switch
+            float dw, dh, dx;
+            if (DocumentStyle.ImageAlignment == ImageAlignment.Stretch)
             {
-                ImageAlignment.Right => img.W - dw,
-                ImageAlignment.Center => (img.W - dw) / 2,
-                _ => 0
-            };
+                float rw = Math.Min(img.W, DocumentStyle.MaxImageWidth > 0 ? DocumentStyle.MaxImageWidth : img.W);
+                float scale = Math.Min(rw / iw, img.H / ih);
+                dw = iw * scale;
+                dh = ih * scale;
+                dx = img.X + (img.W - dw) / 2;
+            }
+            else
+            {
+                dw = Math.Min(iw, img.W);
+                dh = Math.Min(ih, img.H);
+                dx = img.X;
+                dx += DocumentStyle.ImageAlignment switch
+                {
+                    ImageAlignment.Right => img.W - dw,
+                    ImageAlignment.Center => (img.W - dw) / 2,
+                    _ => 0
+                };
+            }
             float dy = img.Y + (img.H - dh) / 2;
-            var dstRect = new Windows.Foundation.Rect(dx, dy, dw, dh);
+            float sdx = MathF.Floor(dx);
+            float sdy = MathF.Floor(dy);
+            float sdw = MathF.Ceiling(dx + dw) - sdx;
+            float sdh = MathF.Ceiling(dy + dh) - sdy;
+            var dstRect = new Windows.Foundation.Rect(sdx, sdy, sdw, sdh);
             var srcRect = new Windows.Foundation.Rect(0, 0, bmp.Size.Width, bmp.Size.Height);
             ss.DrawImage(bmp, dstRect, srcRect, 1, CanvasImageInterpolation.HighQualityCubic);
         }
         else
         {
-            ss.FillRectangle(img.X, img.Y, img.W, img.H, DocumentStyle.ImagePlaceholderColor);
-            ss.DrawRectangle(img.X, img.Y, img.W, img.H, DocumentStyle.ImageBorderColor);
+            float fx = MathF.Floor(img.X);
+            float fy = MathF.Floor(img.Y);
+            float fw = MathF.Ceiling(img.X + img.W) - fx;
+            float fh = MathF.Ceiling(img.Y + img.H) - fy;
+            ss.DrawRectangle(fx, fy, fw, fh, DocumentStyle.ImageBorderColor);
             using var mf = new CanvasTextFormat { FontFamily = DocumentStyle.FontFamily, FontSize = DocumentStyle.BodyFontSize, WordWrapping = CanvasWordWrapping.Wrap };
-            ss.DrawText(img.Alt, img.X + 4, img.Y + 4, DocumentStyle.TextColor, mf);
+            ss.DrawText(img.Alt, fx + 5, fy + 4, Math.Max(0, fw - 4), Math.Max(0, fh - 8), DocumentStyle.TextColor, mf);
         }
     }
 
-    float ImageHeight(string url, float w)
+    (float Width, float Height) GetImageDimensions(string url, string alt, float maxW)
     {
         var bmp = ImageProvider?.GetImage(url, Device);
         if (bmp != null)
         {
-            float mw = DocumentStyle.MaxImageWidth > 0 ? Math.Min(DocumentStyle.MaxImageWidth, w) : w;
-            float scale = mw / (float)bmp.Size.Width;
-            return (float)bmp.Size.Height * scale + DocumentStyle.ParagraphSpacing;
+            float iw = (float)bmp.Size.Width;
+            float ih = (float)bmp.Size.Height;
+            float maxAllowed = DocumentStyle.MaxImageWidth > 0 ? Math.Min(DocumentStyle.MaxImageWidth, maxW) : maxW;
+            if (DocumentStyle.ImageAlignment == ImageAlignment.Stretch)
+            {
+                float scale = maxAllowed / iw;
+                return (maxAllowed, ih * scale + DocumentStyle.ParagraphSpacing);
+            }
+            if (iw > maxAllowed)
+            {
+                float scale = maxAllowed / iw;
+                return (maxAllowed, ih * scale + DocumentStyle.ParagraphSpacing);
+            }
+            return (iw, ih + DocumentStyle.ParagraphSpacing);
         }
-        return 200 + DocumentStyle.ParagraphSpacing;
+        using var altLayout = new CanvasTextLayout(Device, alt, _bf!, maxW, 100000);
+        float aw = Math.Min((float)altLayout.DrawBounds.Width + 12, maxW);
+        int lineCount = Math.Max(1, altLayout.LineCount);
+        float lineH = DocumentStyle.BodyFontSize * 1.4f;
+        float ah = lineH * lineCount;
+        return (aw, ah + DocumentStyle.ParagraphSpacing);
     }
 
     static bool? GetTaskCheck(ContainerInline? inl)
@@ -325,8 +382,10 @@ public sealed partial class MarkWin2DControl : UserControl
         if (string.IsNullOrEmpty(code)) return;
         float pad = DocumentStyle.CodeBlockPadding, mar = DocumentStyle.CodeBlockMargin;
         using var lo = new CanvasTextLayout(Device, code, _cf!, w - pad * 2, 100000);
+        float codeW = (float)lo.DrawBounds.Width + pad * 2;
         float hh = pad * 2 + (float)lo.DrawBounds.Height + mar * 2;
         _totalHeight += hh; Store(c, hh, w, x, 0);
+        _maxContentWidth = Math.Max(_maxContentWidth, x + codeW);
     }
 
     void DrawCode(CanvasDrawingSession ss, LeafBlock c, LayoutEntry e)
@@ -430,25 +489,81 @@ public sealed partial class MarkWin2DControl : UserControl
         if (rows.Count == 0) return;
         int cc = rows.Max(r => r.Count);
         if (cc == 0) return;
+
+        var allRuns = new List<TextRun>[rows.Count][];
+        var allImages = new List<ImageInfo>[rows.Count][];
+        for (int ri = 0; ri < rows.Count; ri++)
+        {
+            var row = rows[ri];
+            allRuns[ri] = new List<TextRun>[row.Count];
+            allImages[ri] = new List<ImageInfo>[row.Count];
+            for (int i = 0; i < row.Count; i++)
+            {
+                if (row[i] is TableCell cell)
+                {
+                    var (runs, images) = GetCellContent(cell);
+                    allRuns[ri][i] = runs;
+                    allImages[ri][i] = images;
+                }
+                else
+                {
+                    allRuns[ri][i] = new List<TextRun>();
+                    allImages[ri][i] = new List<ImageInfo>();
+                }
+            }
+        }
+
         var cw = ColWidths(rows, cc, w);
         var rh = new float[rows.Count];
         float ty = _totalHeight;
+
         for (int ri = 0; ri < rows.Count; ri++)
         {
             var row = rows[ri];
             float mh = 0;
+            float cx = x;
             for (int i = 0; i < row.Count && i < cc; i++)
+            {
                 if (row[i] is TableCell cell)
                 {
-                    string txt = CellText(cell);
-                    using var lo = new CanvasTextLayout(Device, txt, _bf!, cw[i] - DocumentStyle.TableCellPadding * 2, 100000);
-                    float h = (float)lo.DrawBounds.Height + DocumentStyle.TableCellPadding * 2;
-                    if (h > mh) mh = h;
+                    var runs = allRuns[ri][i];
+                    var imgs = allImages[ri][i];
+                    float textH = 0, imgTotalH = 0;
+
+                    if (runs.Count > 0)
+                    {
+                        using var lo = BuildRichLayout(runs, cw[i] - DocumentStyle.TableCellPadding * 2);
+                        if (lo != null) textH = (float)lo.DrawBounds.Height;
+                    }
+
+                    float iy = _totalHeight + DocumentStyle.TableCellPadding + textH;
+                    foreach (var imgInfo in imgs)
+                    {
+                        var (iw, ih) = GetImageDimensions(imgInfo.Url, imgInfo.Alt, cw[i] - DocumentStyle.TableCellPadding * 2);
+                        _imageEntries.Add(new ImageEntry(imgInfo.Url, imgInfo.Alt, cx + DocumentStyle.TableCellPadding, iy, iw, ih));
+                        iy += ih;
+                        imgTotalH += ih;
+                    }
+
+                    float cellH = textH + imgTotalH + DocumentStyle.TableCellPadding * 2;
+                    if (cellH > mh) mh = cellH;
                 }
+                cx += cw[i] + 1;
+            }
             rh[ri] = mh > 0 ? mh : 20;
             _totalHeight += rh[ri] + 1;
         }
-        _tableCache[t] = new TableLayoutInfo { ColWidths = cw, RowHeights = rh };
+
+        float tableW = x;
+        for (int i = 0; i < cc; i++) tableW += cw[i] + 1;
+        _maxContentWidth = Math.Max(_maxContentWidth, tableW);
+
+        var flatRuns = new List<TextRun>[rows.Count * cc];
+        for (int ri = 0; ri < rows.Count; ri++)
+            for (int i = 0; i < rows[ri].Count && i < cc; i++)
+                flatRuns[ri * cc + i] = allRuns[ri][i];
+
+        _tableCache[t] = new TableLayoutInfo { ColWidths = cw, RowHeights = rh, CellRuns = flatRuns };
         Store(t, _totalHeight - ty, w, x, 0);
     }
 
@@ -457,28 +572,42 @@ public sealed partial class MarkWin2DControl : UserControl
         if (!_tableCache.TryGetValue(t, out var cache)) return;
         var cw = cache.ColWidths;
         var rh = cache.RowHeights;
+        var allRuns = cache.CellRuns;
         var rows = t.OfType<TableRow>().ToList();
         if (rows.Count == 0) return;
         int cc = cw.Length;
+        float tableEndX = e.X;
+        for (int i = 0; i < cc; i++) tableEndX += cw[i] + 1;
         float cy = e.Y;
         for (int ri = 0; ri < rows.Count && ri < rh.Length; ri++)
         {
             var row = rows[ri];
             bool isH = row.IsHeader;
             float mh = rh[ri];
-            if (isH) ss.FillRectangle(e.X, cy, e.W, mh, DocumentStyle.TableHeaderBackground);
+            if (isH) ss.FillRectangle(e.X, cy, tableEndX - e.X, mh, DocumentStyle.TableHeaderBackground);
             float cx = e.X;
             for (int i = 0; i < row.Count && i < cc; i++)
             {
                 if (row[i] is TableCell cell)
                 {
-                    string txt = CellText(cell);
-                    if (isH)
+                    int idx = ri * cc + i;
+                    var runs = (allRuns != null && idx < allRuns.Length) ? allRuns[idx] : null;
+                    if (runs != null && runs.Count > 0)
                     {
-                        using var hf = new CanvasTextFormat { FontFamily = DocumentStyle.FontFamily, FontSize = DocumentStyle.BodyFontSize, FontWeight = new Windows.UI.Text.FontWeight { Weight = 600 } };
-                        ss.DrawText(txt, cx + DocumentStyle.TableCellPadding, cy + DocumentStyle.TableCellPadding, DocumentStyle.TextColor, hf);
+                        if (isH)
+                        {
+                            using var hf = new CanvasTextFormat { FontFamily = DocumentStyle.FontFamily, FontSize = DocumentStyle.BodyFontSize, FontWeight = new Windows.UI.Text.FontWeight { Weight = 600 }, WordWrapping = CanvasWordWrapping.Wrap };
+                            using var lo = BuildRichLayout(runs, cw[i] - DocumentStyle.TableCellPadding * 2, hf);
+                            if (lo != null)
+                                ss.DrawTextLayout(lo, cx + DocumentStyle.TableCellPadding, cy + DocumentStyle.TableCellPadding, DocumentStyle.TextColor);
+                        }
+                        else
+                        {
+                            using var lo = BuildRichLayout(runs, cw[i] - DocumentStyle.TableCellPadding * 2);
+                            if (lo != null)
+                                ss.DrawTextLayout(lo, cx + DocumentStyle.TableCellPadding, cy + DocumentStyle.TableCellPadding, DocumentStyle.TextColor);
+                        }
                     }
-                    else ss.DrawText(txt, cx + DocumentStyle.TableCellPadding, cy + DocumentStyle.TableCellPadding, DocumentStyle.TextColor, _bf!);
                     ss.DrawLine(cx, cy, cx, cy + mh, DocumentStyle.TableBorderColor);
                 }
                 cx += cw[i] + 1;
@@ -504,8 +633,7 @@ public sealed partial class MarkWin2DControl : UserControl
                     if (tw > w[i]) w[i] = tw;
                 }
         float total = 0; for (int i = 0; i < cc; i++) total += w[i] + 1;
-        if (total > maxW && total > cc) { float sc = (maxW - cc) / (total - cc); for (int i = 0; i < cc; i++) w[i] *= sc; }
-        else if (total < maxW && cc > 0) { float extra = (maxW - total) / cc; for (int i = 0; i < cc; i++) w[i] += extra; }
+        if (total < maxW && cc > 0) { float extra = (maxW - total) / cc; for (int i = 0; i < cc; i++) w[i] += extra; }
         return w;
     }
 
@@ -514,6 +642,17 @@ public sealed partial class MarkWin2DControl : UserControl
         var sb = new StringBuilder();
         foreach (var c in cell) if (c is ParagraphBlock p) sb.Append(TextOf(p.Inline));
         return sb.ToString().TrimEnd();
+    }
+
+    (List<TextRun> runs, List<ImageInfo> images) GetCellContent(TableCell cell)
+    {
+        var runs = new List<TextRun>();
+        var images = new List<ImageInfo>();
+        bool hasTask = false;
+        foreach (var c in cell)
+            if (c is ParagraphBlock p && p.Inline != null)
+                Walk(p.Inline, runs, false, false, false, false, null, ref hasTask, images);
+        return (runs, images);
     }
 
     void LayHR(float x, float w) { float hh = DocumentStyle.HorizontalRuleMargin * 2 + 2; _totalHeight += hh; Store(new ThematicBreakBlock(null!), hh, w, x, 0); }
@@ -587,13 +726,13 @@ public sealed partial class MarkWin2DControl : UserControl
         }
     }
 
-    CanvasTextLayout? BuildRichLayout(List<TextRun> runs, float w)
+    CanvasTextLayout? BuildRichLayout(List<TextRun> runs, float w, CanvasTextFormat? baseFormat = null)
     {
         var sb = new StringBuilder();
         foreach (var r in runs) sb.Append(r.T);
         string ft = sb.ToString();
         if (string.IsNullOrEmpty(ft)) return null;
-        var lo = new CanvasTextLayout(Device, ft, _bf!, w, 100000);
+        var lo = new CanvasTextLayout(Device, ft, baseFormat ?? _bf!, w, 100000);
         try
         {
             int off = 0;
@@ -652,7 +791,7 @@ public sealed partial class MarkWin2DControl : UserControl
 
     readonly record struct LayoutEntry(Block B, float Y, float H, float W, float X, int Indent);
 
-    struct TextRun
+    internal struct TextRun
     {
         public string T = "";
         public bool B, I, S, C, L;
