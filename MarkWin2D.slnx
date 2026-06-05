@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="DemoPage/DemoPage.csproj">
+    <Platform Project="x64" />
+    <Deploy />
+  </Project>
+  <Project Path="MarkWin2D/MarkWin2D.csproj" />
+</Solution>

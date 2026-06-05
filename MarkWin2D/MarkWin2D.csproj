@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>MarkWin2D</RootNamespace>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <Win2DWarnNoPlatform>true</Win2DWarnNoPlatform>
+    <PackageId>MarkWin2D</PackageId>
+    <PackageVersion>0.0.6-alpha</PackageVersion>
+    <Authors>WWW4R4E</Authors>
+    <Product>MarkWin2D</Product>
+    <Description>基于 Win2D 的 GFM (GitHub Flavored Markdown) 渲染控件，用于 WinUI 3 应用。支持标题、代码块、表格、任务列表、引用、图片等。</Description>
+		<Copyright>Copyright © $(AssemblyCompany) $(AssemblyFileVersion)</Copyright>
+    <PackageTags>markdown;winui;win2d;graphics;rendering;ui;control</PackageTags>
+    <PackageProjectUrl>https://github.com/WWW4R4E/MarkWin2D</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/WWW4R4E/MarkWin2D</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseFile>LICENSE</PackageLicenseFile>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="[1.2.0, 2.0.0)" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="[1.4.0, 2.0.0)" />
+  </ItemGroup>
+  <ItemGroup>
+  <None Include="..\LICENSE" Pack="true" PackagePath="" Visible="false" />
+  <None Include="..\README.md" Pack="true" PackagePath="" Visible="false" />
+  <None Include="..\icon.png" Pack="true" PackagePath="" Visible="false" />
+  </ItemGroup>
+</Project>
