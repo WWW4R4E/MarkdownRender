@@ -34,6 +34,7 @@ public sealed partial class MarkWin2DControl : UserControl
     private readonly Dictionary<Table, TableLayoutInfo> _tableCache = new();
     private IImageProvider? _imageProvider;
     private readonly List<LinkHitTarget> _linkTargets = new();
+    private float _maxTextureHeight = 16384;
 
     public bool AreLinksEnabled { get; set; } = true;
 
@@ -51,6 +52,7 @@ public sealed partial class MarkWin2DControl : UserControl
         _pipeline = new MarkdownPipelineBuilder()
             .UseAdvancedExtensions()
             .Build();
+        MarkdownCanvas.RegionsInvalidated += OnRegionsInvalidated;
         MarkdownCanvas.SizeChanged += OnCanvasSizeChanged;
         MarkdownCanvas.PointerPressed += OnCanvasPointerPressed;
     }
@@ -102,17 +104,32 @@ public sealed partial class MarkWin2DControl : UserControl
         MarkdownCanvas.Invalidate();
     }
 
-    private void OnDraw(CanvasControl s, CanvasDrawEventArgs a)
+    private void OnRegionsInvalidated(CanvasVirtualControl sender, CanvasRegionsInvalidatedEventArgs args)
     {
-        var ss = a.DrawingSession;
+        if (_layoutDirty && sender.ActualWidth > 0)
+            ComputeLayout((float)sender.ActualWidth);
+        if (_document == null) return;
+
         foreach (var t in _linkTargets) t.Layout.Dispose();
         _linkTargets.Clear();
-        if (_layoutDirty && s.ActualWidth > 0)
-            ComputeLayout((float)s.ActualWidth);
 
-        if (_document == null) return;
-        foreach (var e in _layout) Draw(ss, e);
-        foreach (var img in _imageEntries) DrawImage(ss, img);
+        foreach (var region in args.InvalidatedRegions)
+        {
+            using var ds = sender.CreateDrawingSession(region);
+            float rY = (float)region.Y, rH = (float)region.Height;
+            float rB = rY + rH;
+
+            foreach (var e in _layout)
+            {
+                if (e.Y + e.H <= rY || e.Y >= rB) continue;
+                Draw(ds, e);
+            }
+            foreach (var img in _imageEntries)
+            {
+                if (img.Y + img.H <= rY || img.Y >= rB) continue;
+                DrawImage(ds, img);
+            }
+        }
     }
 
     private void OnCanvasSizeChanged(object sender, SizeChangedEventArgs e)
@@ -139,21 +156,27 @@ public sealed partial class MarkWin2DControl : UserControl
         _lastWidth = w;
         _layoutDirty = false;
 
+        _isInternalResize = true;
+        bool sizeChanged = false;
         float finalW = Math.Max(w, _maxContentWidth);
         if (Math.Abs(MarkdownCanvas.Width - finalW) > 0.5f)
         {
-            _isInternalResize = true;
             MarkdownCanvas.Width = finalW;
-            _isInternalResize = false;
+            sizeChanged = true;
         }
-
         if (!float.IsNaN(_totalHeight) &&
-        (float.IsNaN((float)MarkdownCanvas.Height) ||
-         Math.Abs(MarkdownCanvas.Height - _totalHeight) > 1))
+            (float.IsNaN((float)MarkdownCanvas.Height) ||
+             Math.Abs(MarkdownCanvas.Height - _totalHeight) > 1))
         {
             MarkdownCanvas.Height = _totalHeight;
-            ScrollViewer.InvalidateMeasure();
+            sizeChanged = true;
         }
+        _isInternalResize = false;
+        if (sizeChanged)
+            ScrollViewer.InvalidateMeasure();
+
+        if (MarkdownCanvas.ReadyToDraw)
+            MarkdownCanvas.Invalidate();
     }
 
     void EnsureFormats()
@@ -172,6 +195,7 @@ public sealed partial class MarkWin2DControl : UserControl
             FontSize = DocumentStyle.CodeFontSize,
             WordWrapping = CanvasWordWrapping.NoWrap
         };
+        // try { _maxTextureHeight = Device.MaximumBitmapSizeInPixels; } catch { }
     }
 
     void FreeFormats()
@@ -206,7 +230,7 @@ public sealed partial class MarkWin2DControl : UserControl
         if (string.IsNullOrEmpty(t)) return;
         float fs = h.Level switch { 1 => DocumentStyle.H1FontSize, 2 => DocumentStyle.H2FontSize, 3 => DocumentStyle.H3FontSize, 4 => DocumentStyle.H4FontSize, 5 => DocumentStyle.H5FontSize, _ => DocumentStyle.H6FontSize };
         using var fmt = new CanvasTextFormat { FontFamily = DocumentStyle.FontFamily, FontSize = fs, FontWeight = new Windows.UI.Text.FontWeight { Weight = 700 }, WordWrapping = CanvasWordWrapping.Wrap };
-        using var lo = new CanvasTextLayout(Device, t, fmt, w, 100000);
+        using var lo = new CanvasTextLayout(Device, t, fmt, w, _maxTextureHeight);
         float textH = (float)lo.DrawBounds.Height;
         float hh = DocumentStyle.HeadingMarginTop + textH + DocumentStyle.HeadingMarginBottom + (h.Level <= 2 ? DocumentStyle.HeadingBorderHeight + 8 : 0);
         _totalHeight += hh; Store(h, hh, w, x, 0);
@@ -218,7 +242,7 @@ public sealed partial class MarkWin2DControl : UserControl
         if (string.IsNullOrEmpty(t)) return;
         float fs = h.Level switch { 1 => DocumentStyle.H1FontSize, 2 => DocumentStyle.H2FontSize, 3 => DocumentStyle.H3FontSize, 4 => DocumentStyle.H4FontSize, 5 => DocumentStyle.H5FontSize, _ => DocumentStyle.H6FontSize };
         using var fmt = new CanvasTextFormat { FontFamily = DocumentStyle.FontFamily, FontSize = fs, FontWeight = new Windows.UI.Text.FontWeight { Weight = 700 }, WordWrapping = CanvasWordWrapping.Wrap };
-        using var lo = new CanvasTextLayout(Device, t, fmt, e.W, 100000);
+        using var lo = new CanvasTextLayout(Device, t, fmt, e.W, _maxTextureHeight);
         float y0 = e.Y + DocumentStyle.HeadingMarginTop;
         ss.DrawTextLayout(lo, e.X, y0, DocumentStyle.TextColor);
         if (h.Level <= 2)
@@ -361,7 +385,7 @@ public sealed partial class MarkWin2DControl : UserControl
             }
             return (iw, ih + DocumentStyle.ParagraphSpacing);
         }
-        using var altLayout = new CanvasTextLayout(Device, alt, _bf!, maxW, 100000);
+        using var altLayout = new CanvasTextLayout(Device, alt, _bf!, maxW, _maxTextureHeight);
         float aw = Math.Min((float)altLayout.DrawBounds.Width + 12, maxW);
         int lineCount = Math.Max(1, altLayout.LineCount);
         float lineH = DocumentStyle.BodyFontSize * 1.4f;
@@ -381,7 +405,7 @@ public sealed partial class MarkWin2DControl : UserControl
         string code = CodeText(c);
         if (string.IsNullOrEmpty(code)) return;
         float pad = DocumentStyle.CodeBlockPadding, mar = DocumentStyle.CodeBlockMargin;
-        using var lo = new CanvasTextLayout(Device, code, _cf!, w - pad * 2, 100000);
+        using var lo = new CanvasTextLayout(Device, code, _cf!, w - pad * 2, _maxTextureHeight);
         float codeW = (float)lo.DrawBounds.Width + pad * 2;
         float hh = pad * 2 + (float)lo.DrawBounds.Height + mar * 2;
         _totalHeight += hh; Store(c, hh, w, x, 0);
@@ -394,7 +418,7 @@ public sealed partial class MarkWin2DControl : UserControl
         if (string.IsNullOrEmpty(code)) return;
         float pad = DocumentStyle.CodeBlockPadding, mar = DocumentStyle.CodeBlockMargin;
         ss.FillRectangle(e.X, e.Y + mar, e.W, e.H - mar * 2, DocumentStyle.CodeBackgroundColor);
-        using var lo = new CanvasTextLayout(Device, code, _cf!, e.W - pad * 2, 100000);
+        using var lo = new CanvasTextLayout(Device, code, _cf!, e.W - pad * 2, _maxTextureHeight);
         ss.DrawTextLayout(lo, e.X + pad, e.Y + mar + pad, DocumentStyle.TextColor);
     }
 
@@ -628,7 +652,7 @@ public sealed partial class MarkWin2DControl : UserControl
                 if (row[i] is TableCell cell)
                 {
                     string t = CellText(cell);
-                    using var lo = new CanvasTextLayout(Device, t, _bf!, 10000, 100000);
+                    using var lo = new CanvasTextLayout(Device, t, _bf!, _maxTextureHeight, _maxTextureHeight);
                     float tw = (float)lo.DrawBounds.Width + DocumentStyle.TableCellPadding * 2 + 2;
                     if (tw > w[i]) w[i] = tw;
                 }
@@ -732,7 +756,7 @@ public sealed partial class MarkWin2DControl : UserControl
         foreach (var r in runs) sb.Append(r.T);
         string ft = sb.ToString();
         if (string.IsNullOrEmpty(ft)) return null;
-        var lo = new CanvasTextLayout(Device, ft, baseFormat ?? _bf!, w, 100000);
+        var lo = new CanvasTextLayout(Device, ft, baseFormat ?? _bf!, w, _maxTextureHeight);
         try
         {
             int off = 0;
